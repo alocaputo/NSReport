@@ -1,0 +1,681 @@
+---
+title: "Analisi di polbooks"
+author: "Locaputo Alessandro"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduzione
+
+Ho deciso di analizzare un dataset chiamato **polbooks** realizzato da Valdis Krebs, esso contiene informazioni sui libri di politica americana e le vendite di questi su **Amazon.com** per cercare di capire meglio in che rapporti sono i differenti schieramenti politici e quali sono le rispettive abitudini di acquisto, in particolare cercando di rispondere alle seguenti domande:
+
+a. Quali sono i libri più raccomandati e quali spingono all'acquisto del maggior numero di libri?
+b. Quali sono i libri più influenti, ossia quali influenzano maggiormente il mercato?
+c. Quanto sono propensi i vari schieramenti a indurre all'acquisto di libri di schieramenti diversi dal proprio?
+d. Quali sono gli schieramenti che comunicano maggiormente?
+e. Quali sono i libri che comunicano maggiormente con schieramenti diversi dal proprio?
+f. Quali sono gli hub e le authority della rete?
+
+## Data Preparation & Exploration
+```{r include= FALSE}
+library(dplyr)
+library(igraph)
+library(ggraph)
+library(visNetwork)
+#library(ineq)
+#library(BBmisc)
+```
+
+Carichiamo il dataframe
+
+```{r}
+g <- read.graph("polbooks.gml", format = "gml")
+g_el <- as_edgelist(g)
+edges <- data.frame( from = g_el[,1], to = g_el[,2])
+nodes <- data.frame( name = seq(1,105), value = V(g)$value, label= V(g)$label)
+
+g2 = graph_from_data_frame(edges, directed = TRUE, vertices = nodes) #Rendaimolo un grafo diretto
+```
+
+
+Visualizziamo la rete completa:
+```{r warning=FALSE}
+colours <- replace(V(g2)$value,V(g2)$value =="n","#ffffff")
+colours <- replace(colours,colours =="c","#e60800")
+colours <- replace(colours,colours =="l","#1220e8")
+nodes1 <- data.frame( id = nodes[,1], label = nodes[,3], color = colours)
+
+visNetwork(nodes1, edges) %>%
+ visEdges(arrows = 'from', scaling = list(min = 2, max = 2))%>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = list(enabled = TRUE,useLabels = TRUE))
+```
+
+Visualizziamo ora nel dettaglio com'è costituita la rete.
+
+Numero di contenuti nella rete:
+```{r}
+length(V(g2))
+```
+
+Ognuno di questi nodi rappresenta un libro che tratta argomenti di politica americana in vendita su *Amazon.com*.
+Come ad esempio:
+```{r}
+head(V(g2)$label)
+```
+
+Inoltre ogni nodo è stato etichettato da *Mark Newman* a partire dalla descrizione e dalle recensioni del libro presenti su *Amazon.com* con un valore per indicare lo schieramento politico di appartenenza, ovvero se il libro è **neurale**,**conservatore** o **liberale**.
+```{r}
+unique(V(g2)$value);
+```
+
+
+Il numero di archi presenti nel dataset è pari a
+```{r}
+length(E(g2));
+```
+
+Un arco va da un nodo A ad un nodo B, se tipicamente un utente che acquista il libro A su *Amazon.com*, acquista anche il libro B. Di fatto rappresenta la funzione "chi ha comprato questo libro ha comprato anche questi libri" presente su *Amazon.com*.
+
+Ad esempio chi ha comprato 
+```{r, include=FALSE}
+rnd <- sample(1:441, 1)
+#rnd <- 283
+```
+```{r}
+V(g2)$label[edges[rnd,1]]
+V(g2)$value[edges[rnd,1]]
+```
+```{r pressure, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",edges[rnd,1]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+ha comprato anche
+```{r}
+V(g2)$label[edges[rnd,2]]
+V(g2)$value[edges[rnd,2]]
+```
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",edges[rnd,2]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Vediamo ora com'è ripartita la rete in base agli schieramenti politici di appartenenza di ogni libro.
+```{r}
+table(V(g2)$value)
+```
+Come si può notare la numerosità di libri conservatori e liberali è molto simile, mentre i libri neutrali sono presenti in quantità notevolmente minore.
+
+```{r}
+barplot(table(V(g2)$value),ylim=c(0,50), col = c("#e60800", "#0033ed", "#ffffff"), names.arg=c("conservative","liberal","neutral"))
+```
+
+Analizziamo la distribuzione del grado entrante della rete, ossia la frequenza d'acquisto di un libro grazie ai suggerimenti.
+```{r}
+in_degree = degree(g2, mode = "in")
+in_dist = table(in_degree)
+barplot(in_dist / sum(in_dist), xlab="Degree", ylab="Frequency")
+```
+```{r}
+summary(in_degree)
+```
+```{r}
+skewness = function(x) mean( ((x - mean(x)) / sd(x))^3 )
+skewness(in_degree)
+```
+Come si può notare dal barplot e dall'indice di skewness, la distribuzione non è simmetrica ma presenta un'asimmetria a sinistra.
+
+
+Mentre la distribuzione del grado uscente rappresenta il numero di acquisti indotti dall'acquisto di un determinato libro.
+```{r}
+out_degree = degree(g2, mode = "out")
+out_dist = table(out_degree)
+barplot(out_dist / sum(out_dist), xlab="Degree", ylab="Frequency")
+```
+```{r}
+summary(out_degree)
+```
+```{r}
+skewness(out_degree)
+```
+In questo caso l'asimmetria è ancora più evidente.
+
+# Quesiti
+
+Cerchiamo ora di rispondere ai questi riportati sopra.
+
+## a. 
+> Quali sono i libri più raccomandati e quali spingono all'acquisto del maggior numero di libri ?
+
+I libri più acquistati anche grazie alla raccomandazione diretta da parte di altri libri, ovvero quei libri con il maggior numero di archi entranti.
+```{r}
+in_degree = degree(g2,mode="in")
+
+barplot(sort(in_degree), col = colours[order(in_degree)], xaxt='n', ann=FALSE)
+```
+
+```{r}
+max_in_degree = which(in_degree==max(in_degree))
+mid_title <- V(g2)$label[max_in_degree]
+mid_value <- V(g2)$value[max_in_degree]
+mid_degree <- max(in_degree)
+cbind( "title" = mid_title , "value" = mid_value, "degree" = mid_degree)
+```
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",max_in_degree-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Vediamo ora il grado entrante medio di ogni schieramento.
+
+```{r}
+l_idx <- V(g2)[which(V(g)$value=="l")]
+n_idx <- V(g2)[which(V(g)$value=="n")]
+c_idx <- V(g2)[which(V(g)$value=="c")]
+
+#Grado medio
+mean_id <- data.frame( n = sum(in_degree[n_idx])/length(n_idx), c = sum(in_degree[c_idx])/length(c_idx), l = sum(in_degree[l_idx])/length(l_idx))
+mmean_id <- as.matrix(mean_id)
+barplot(mmean_id[1,], col = c("#ffffff","#e60800", "#0033ed" ), names.arg=c("neutral","conservative","liberal"))
+```
+Notiamo quindi che quando si parla di grado relativamente ai diversi schieramenti politici la situazione è abbastanza simile tra *liberali* e *conservatori* mentre i libri *neutrali* beneficiano in misura minore degli acquisti indotti dalla sezione libri suggeriti dei libri acquisti.
+
+
+
+
+Similmente possiamo trovare i nodi con **out degree** maggiore, ovvero i libri che spingono all'acquisto del maggior numero di libri presenti nella propria sezione di libri suggeriti. Ossia i libri con le raccomandazioni ad essi associate migliori.
+```{r}
+out_degree = degree(g2,mode="out")
+
+barplot(sort(out_degree), col = colours[order(out_degree)], xaxt='n', ann=FALSE)
+```
+Troviamo ora il libro con *out-degree* massimo e il suo schieramento di appartenenza.
+```{r}
+max_out_degree = which(out_degree==max(out_degree))
+mod_title <- V(g2)$label[max_out_degree]
+mod_value <- V(g2)$value[max_out_degree]
+mod_degree <- max(out_degree)
+cbind( "title" = mod_title , "value" = mod_value, "degree" = mod_degree)
+```
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",max_out_degree-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Mentre il grado medio per fazione politica è:
+```{r}
+#Grado medio
+mean_od <- data.frame( n = sum(out_degree[n_idx])/length(n_idx), c = sum(out_degree[c_idx])/length(c_idx), l = sum(out_degree[l_idx])/length(l_idx))
+mmean_od <- as.matrix(mean_od)
+barplot(mmean_od[1,], col = c("#ffffff","#e60800", "#0033ed" ), names.arg=c("neutral","conservative","liberal"))
+```
+In questo caso tutti e tre gli schieramenti sono abbastanza simile. Se consideriamo l'out-degree come indice di qualità delle raccomandazioni possiamo concludere che essa è simile per tutti gli schieramenti.
+
+
+Potrebbe essere interessante trovare il libro o i libri che innescano la più lunga catena di raccomandazioni
+```{r}
+d = get_diameter(g2)
+d
+```
+
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",d[1]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+```{r}
+d$value
+```
+#b.
+
+> Quali sono i libri più influenti, ossia quali influenzano maggiormente il mercato?
+
+Calcolando la Eigenvector Centrality, i nodi con grado maggiore saranno quelli più importanti, dove con più importanti si intendono quei libri che vengono acquistati maggiormente grazie al fatto di essere tra i suggerimenti di quelli acquistati maggiormente.
+```{r warning=FALSE}
+ec <- eigen_centrality(g2)$vector
+wnodes <- nodes
+wnodes["weight"] <- ec
+g3 = graph_from_data_frame(edges, directed = TRUE, vertices = wnodes)
+ggraph(g3) +
+  geom_edge_link(arrow = arrow(length = unit(2, 'mm'), type = "open"),end_cap = circle(0.5, 'mm'), alpha = 0.4, show.legend = FALSE) +
+  geom_node_point(aes(color = value, size = weight))  +
+  theme_graph()
+```
+
+```{r}
+barplot(sort(ec), col = colours[order(ec)], xaxt='n', ann=FALSE)
+```
+```{r}
+#Grado medio
+mean_ec <- data.frame( n = sum(ec[n_idx])/length(n_idx), c = sum(ec[c_idx])/length(c_idx), l = sum(ec[l_idx])/length(l_idx))
+mmean_ec <- as.matrix(mean_ec)
+barplot(mmean_ec[1,], col = c("#ffffff","#e60800", "#0033ed" ), names.arg=c("neutral","conservative","liberal"), ylim=c(0,0.5))
+```
+
+Se consideriamo l'eigenvector centrality, l'influenza dei libri liberali è nettamente superiore a quelli neutrali e conservatori, che in questo caso sono molto simili tra loro. Questo significa appunto che i libri liberali esercitano una maggiore influenza sulla rete e dunque essi impattano in maniera maggiore sugli acquisti.
+
+# c.
+> Quanto sono propensi i vari schieramenti a indurre all'acquisto di libri di schieramenti diversi dal proprio?
+
+Creiamo un grafo pesato diretto composto da tre nodi, uno per ogni schieramento. Il peso di ogni arco indicherà il numero di archi ve vanno dallo schieramento del nodo di partenza a quello del nodo di arrivo. 
+```{r}
+nedges11 <- replace(edges[,1],edges[,1] %in% l_idx,"l")
+nedges21 <- replace(nedges11, nedges11 %in% n_idx,"n")
+nedges31 <- replace(nedges21, nedges21 %in% c_idx,"c")
+nedges12 <- replace(edges[,2],edges[,2] %in% l_idx,"l")
+nedges22 <- replace(nedges12, nedges12 %in% n_idx,"n")
+nedges32 <- replace(nedges22, nedges22 %in% c_idx,"c")
+
+nedges <- data.frame( from = nedges31, to = nedges32)
+nnodes <- data.frame( name = c("l","n","c"), value = c("l","n","c"))
+ng = graph_from_data_frame(nedges, directed = TRUE, vertices = nnodes)
+gng <- graph.adjacency(get.adjacency(ng),weighted=TRUE)
+plot(gng, edge.label=E(gng)$weight, edge.curved=TRUE)
+```
+Analizziamo la rete ottenuta.
+
+```{r}
+w_table <- cbind( get.edgelist(gng) , E(gng)$weight)
+w_table
+```
+```{r}
+dfp <- data.frame( from = w_table[,1], to=w_table[,2], value=as.numeric(w_table[,3])) 
+ggplot(dfp, aes(x=from, y=value, fill =  to)) + 
+  geom_bar(stat="identity", position = "dodge",color="black") + 
+  scale_fill_manual(values = c("c" =  "#e60800", "l"= "#0033ed","n" = "#ffffff"))
+```
+
+Salta subito all'occhio che chi compra un libro conservatore o liberale tenda a acquistarne un altro dello stesso schieramento mentre ciò non è vero per quelli neutrali che anzi presentano un maggior numero di archi extra componente.
+
+
+```{r}
+l_loops <- as.numeric(w_table[1,3])
+l_extra <- as.numeric(w_table[4,3]) + as.numeric(w_table[7,3])
+n_loops <- as.numeric(w_table[5,3])
+n_extra <- as.numeric(w_table[2,3]) + as.numeric(w_table[8,3])
+c_loops <- as.numeric(w_table[9,3])
+c_extra <- as.numeric(w_table[3,3]) + as.numeric(w_table[6,3])
+loops <- c(l_loops, n_loops, c_loops)
+extra <- c(l_extra, n_extra, c_extra)
+l_table <- cbind( "edges" = (loops+extra), "intra" = loops, "extra" = extra, "%intra" = round(loops/(loops+extra)*100,2 ))
+rownames(l_table) <- c("liberal", "neutral", "conservative")
+l_table
+```
+
+Effettivamente gli schieramenti *liberali* e *conservatori* sono molto più chiusi, infatti il numero di archi intra componete è molto superiore a quella extra. Al contrario per i libri *nutrali* la situazione è ribaltata, ed è presente una leggerissima preferenza verso i libri *conservatori*.
+
+## d.
+> Quali sono gli schieramenti che comunicano maggiormente?
+
+Possiamo individuare quali schieramenti comunicano maggiormente tra di loro.
+
+```{r}
+w_tablenl <- w_table[-9,]
+w_tablenl <- w_tablenl[-5,]
+w_tablenl <- w_tablenl[-1,]
+ 
+dfp2 <- data.frame( from = w_tablenl[,1], to=w_tablenl[,2], value=as.numeric(w_tablenl[,3])) 
+ggplot(dfp2, aes(x=from, y=value, fill =  to)) + 
+  geom_bar(stat="identity", position = "dodge",color="black") + 
+  scale_fill_manual(values = c("c" =  "#e60800", "l"= "#0033ed","n" = "#ffffff"))
+```
+Gli acquirenti dei libri liberali tendono a preferire, come era facile supporre, libri neutrali rispetto a quelli liberali.
+Questa tendenza a preferire libri neutrali è presente anche, seppure con uno scarto minore tra i conservatori.
+Più interessante la situazione dei neurali, dato che in linea teorica non dovrebbe esserci nessuna propensione verso nessuno schieramento, però in pratica questo non è vero in quanto chi compra libri neutrali, compra anche con maggiore frequenza libri conservatori piuttosto che liberali..
+
+
+
+##e.
+> Quali sono i libri che comunicano maggiormente con schieramenti diversi dal proprio?
+
+Possiamo ora entrare maggiormente nel dettaglio e individuare quali sono  i libri che inducono maggiormente acquistati di libri di schieramenti avversari.
+
+```{r}
+l_idx <- V(g2)[which(V(g)$value=="l")]
+n_idx <- V(g2)[which(V(g)$value=="n")]
+c_idx <- V(g2)[which(V(g)$value=="c")]
+
+edgesT <- as_tibble(edges)
+edges_from_l <- edgesT %>%
+                  filter(from %in% l_idx)
+from_l_to_n <-  edges_from_l %>%
+                  filter(to %in% n_idx)%>% 
+                  count(from)
+
+from_l_to_c <-  edges_from_l %>%
+                  filter(to %in% c_idx)%>% 
+                  count(from)
+
+edges_from_n <- edgesT %>%
+                  filter(from %in% n_idx)
+from_n_to_l <-  edges_from_n %>%
+                  filter(to %in% l_idx)%>% 
+                  count(from)
+from_n_to_c <-  edges_from_n %>%
+                  filter(to %in% c_idx)%>% 
+                  count(from)
+
+edges_from_c <- edgesT %>%
+                  filter(from %in% c_idx)
+from_c_to_l <-  edges_from_c %>%
+                  filter(to %in% l_idx)%>% 
+                  count(from)
+from_c_to_n <-  edges_from_c %>%
+                  filter(to %in% n_idx)%>% 
+                  count(from)
+```
+
+### Liberali
+
+Il libro neutrale più acquistato da chi compra libri liberali è
+```{r}
+fltn <- V(g2)$label[from_l_to_n$from[which(from_l_to_n$n==max(from_l_to_n$n))]]
+fltnv <- max(from_l_to_n$n)
+cbind( "title" = fltn, "degree" = fltnv)
+```
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_l_to_n$from[which(from_l_to_n$n==max(from_l_to_n$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Mentre i libri conservatori più acquistati da chi compra libri liberali sono:
+
+```{r}
+fltc <- V(g2)$label[from_l_to_c$from[which(from_l_to_c$n==max(from_l_to_c$n))]]
+fltcv <- max(from_l_to_c$n)
+cbind( "title" = fltc, "degree" = fltcv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_l_to_c$from[which(from_l_to_c$n==max(from_l_to_c$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+In entrambi i casi il grado di raccomandazione è comunque abbastanza basso.
+
+### Neutrali
+
+Il libro liberale più acquistato da chi compra libri neutrali è
+```{r}
+fntl <- V(g2)$label[from_n_to_l$from[which(from_n_to_l$n==max(from_n_to_l$n))]]
+fntlv <- max(from_n_to_l$n)
+cbind( "title" = fntl, "degree" = fntlv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_n_to_l$from[which(from_n_to_l$n==max(from_n_to_l$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Mentre il libro conservatore più acquistato da chi compra libri liberali è:
+```{r}
+fntc <- V(g2)$label[from_n_to_c$from[which(from_n_to_c$n==max(from_n_to_c$n))]]
+fntcv <- max(from_n_to_c$n)
+cbind( "title" = fntc, "degree" = fntcv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_n_to_c$from[which(from_n_to_c$n==max(from_n_to_c$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+
+Per quanto riguarda i libri neurali com'era facile supporre il grado di raccomandazione è più alto, pari circa al doppio del risultato precedente, in quanto è più probabile che un libro neutrale metta d'accordo entrambi gli schieramenti avversari.
+
+### Conservatori
+
+Il libro liberale più acquistato da chi compra libri conservatori è
+```{r}
+fctl <- V(g2)$label[from_c_to_l$from[which(from_c_to_l$n==max(from_c_to_l$n))]]
+fctlv <- max(from_c_to_l$n)
+cbind( "title" = fctl, "degree" = fctlv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_c_to_l$from[which(from_c_to_l$n==max(from_c_to_l$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Interessante osservare che questo libro presenta un grado doppio rispetto alla situazione speculare, nonostante il grado medio per questi due schieramenti si del tutto simile.
+
+Mentre i libri neutrali più acquistati da chi compra libri conservatori sono:
+
+```{r}
+fctn <- V(g2)$label[from_c_to_n$from[which(from_c_to_n$n==max(from_c_to_n$n))]]
+fctnv <- max(from_c_to_n$n)
+cbind( "title" = fctn, "degree" = fctnv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",from_c_to_n$from[which(from_c_to_n$n==max(from_c_to_n$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+
+## Caso inverso
+Similmente possiamo individuare quali sono i libri maggiormente acquistati anche grazie al suggerimento d'acquisto di libri di schieramenti diversi dal proprio. 
+
+
+```{r}
+edges_to_l <- edgesT %>%
+                  filter(to %in% l_idx)
+
+to_l_from_n <-  edges_to_l %>%
+                  filter(from %in% n_idx)%>% 
+                  count(to)
+
+to_l_from_c <-  edges_to_l %>%
+                  filter(from %in% c_idx)%>% 
+                  count(to)
+
+
+edges_to_n <- edgesT %>%
+                  filter(to %in% n_idx)
+
+to_n_from_l <-  edges_to_n %>%
+                  filter(from %in% l_idx)%>% 
+                  count(to)
+to_n_from_c <-  edges_to_n %>%
+                  filter(from %in% c_idx)%>% 
+                  count(to)
+
+
+edges_to_c <- edgesT %>%
+                  filter(to %in% c_idx)
+
+to_c_from_l <-  edges_to_c %>%
+                  filter(from %in% l_idx)%>% 
+                  count(to)
+to_c_from_n <-  edges_to_c %>%
+                  filter(from %in% n_idx)%>% 
+                  count(to)
+```
+
+### Liberali
+
+Il libro liberale che beneficia maggiormente dal fatto di essere raccomandato da parte dei neutrali è:
+```{r}
+tlfn <- V(g2)$label[to_l_from_n$to[which(to_l_from_n$n==max(to_l_from_n$n))]]
+tlfnv <- max(to_l_from_n$n)
+cbind( "title" = tlfn, "degree" = tlfnv)
+```
+```{r , echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_l_from_n$to[which(to_l_from_n$n==max(to_l_from_n$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Invece quello raccomandato dai conservatori è:
+```{r}
+tlfc <- V(g2)$label[to_l_from_c$to[which(to_l_from_c$n==max(to_l_from_c$n))]]
+tlfcv <- max(to_l_from_c$n)
+cbind( "title" = tlfc, "degree" = tlfcv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_l_from_c$to[which(to_l_from_c$n==max(to_l_from_c$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+### Neutrali
+
+Quello neutrale più con più acquisti grazie ai libri liberali è:
+```{r}
+tnfl <- V(g2)$label[to_n_from_l$to[which(to_n_from_l$n==max(to_n_from_l$n))]]
+tnflv <- max(to_n_from_l$n)
+cbind( "title" = tnfl, "degree" = tnflv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_n_from_l$to[which(to_n_from_l$n==max(to_n_from_l$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+Questo è il libro con grado maggiore, ne segue che è il libro con il maggior numero di suggerimento d'acquisto da parte di altri libri non appartenenti al suo schieramento.
+
+Invece quelli conservatori più consigliati dai neutrali sono:
+```{r}
+tnfc <- V(g2)$label[to_n_from_c$to[which(to_n_from_c$n==max(to_n_from_c$n))]]
+tnfcv <- max(to_n_from_c$n)
+cbind( "title" = tnfc, "degree" = tnfcv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_n_from_c$to[which(to_n_from_c$n==max(to_n_from_c$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+### Conservatori
+
+Il libro conservatore più acquistato da chi compra libri liberali è:
+```{r}
+tcfl <- V(g2)$label[to_c_from_l$to[which(to_c_from_l$n==max(to_c_from_l$n))]]
+tcflv <- max(to_c_from_l$n)
+cbind( "title" = tcfl, "degree" = tcflv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_c_from_l$to[which(to_c_from_l$n==max(to_c_from_l$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+È curioso notare il successo dell'autore Bob Woodward sia con un libro neutrale che piace ai conservatori, sia con questo libro conservatore acquistato frequentemente da liberali. Mettendo in un certo senso d'accordo sia conservatori che liberali.
+
+I libri conservatori più acquistati da chi ha comprato libri neutrali sono:
+```{r}
+tcfn <- V(g2)$label[to_c_from_n$to[which(to_c_from_n$n==max(to_c_from_n$n))]]
+tcfnv <- max(to_c_from_n$n)
+cbind( "title" = tcfn, "degree" = tcfnv)
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",to_c_from_n$to[which(to_c_from_n$n==max(to_c_from_n$n))]-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+
+#f.
+> Quali sono gli hub e le authority della rete?
+
+Data la natura del dataset può aver senso trovare i libri che sono Authority e Hub relativamente alla Kleinberg centrality.
+
+Cominciamo con il cercare l'authority della rete.
+
+```{r}
+authScore <- authority_score(g2)$vector
+max_auth = which(authScore==max(authScore))
+V(g2)$label[max_auth]
+V(g2)$value[max_auth]
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",max_auth-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+```{r}
+barplot(sort(authScore), col = colours[order(authScore)], xaxt='n', ann=FALSE)
+```
+
+```{r warning=FALSE}
+g3 = graph_from_data_frame(edges, directed = TRUE, vertices = nodes)
+ggraph(g3) +
+  geom_edge_link(arrow = arrow(length = unit(2, 'mm'), type = "open"),end_cap = circle(0.5, 'mm'), alpha = 0.4, show.legend = FALSE) +
+  geom_node_point(aes(color = value, size = authScore))  +
+  theme_graph()
+```
+```{r}
+#Authority media
+aS <- data.frame( n = sum(authScore[n_idx])/length(n_idx), c = sum(authScore[c_idx])/length(c_idx), l = sum(authScore[l_idx])/length(l_idx))
+aSm <- as.matrix(aS)
+barplot(aSm[1,] , col = c("#ffffff", "#e60800", "#0033ed"), names.arg=c("neutral","conservative","liberal"))
+```
+Troviamo che i libri liberali mediamente hanno un grado di authority molto maggiore agli altri due schieramenti.
+
+Gli Hub invece sono i libri che raccomandano il più alto numero di libri con alto grado di authority
+```{r}
+hubScore <- hub_score(g2)$vector
+max_hub = which(hubScore==max(hubScore))
+V(g2)$label[max_hub]
+V(g2)$value[max_hub]
+```
+```{r, echo=FALSE, out.width = '20%'}
+pt <- paste("covers/",max_hub-1, sep="")
+pt <- paste(pt,".jpg", sep = "")
+knitr::include_graphics(pt)
+```
+```{r}
+barplot(sort(hubScore), col = colours[order(hubScore)], xaxt='n', ann=FALSE)
+```
+
+
+```{r warning=FALSE}
+g3 = graph_from_data_frame(edges, directed = TRUE, vertices = nodes)
+ggraph(g3) +
+  geom_edge_link(arrow = arrow(length = unit(2, 'mm'), type = "open"),end_cap = circle(0.5, 'mm'), alpha = 0.4, show.legend = FALSE) +
+  geom_node_point(aes(color = value, size = hubScore))  +
+  theme_graph()
+```
+Hubbosità media per schieramento.
+```{r}
+#Hub medio
+hs <- data.frame( n = sum(hubScore[n_idx])/length(n_idx), c = sum(hubScore[c_idx])/length(c_idx), l = sum(hubScore[l_idx])/length(l_idx))
+hsm <- as.matrix(hs)
+barplot(hsm[1,] , col = c("#ffffff", "#e60800", "#0033ed"), names.arg=c("neutral","conservative","liberal"))
+```
+Dal risultato precedente e dalla struttura della rete,in particolar modo dalla maggior presenza di archi inter componente rispetto a quelli extra componente dello schieramento liberale, troviamo che anche per quanto riguarda il grado di hubness i libri liberali ne escono vincitori.
+
+A livello di schieramenti la correlazione tra questi due risultati è palese, mentre per i singoli libri è ancora vero che ad un authority alta corrisponda un hubness alta?
+
+```{r}
+plot(authScore,hubScore)
+```
+
+```{r}
+cor.test(authScore,hubScore, method="pearson")
+```
+
+Secondo il coefficiente di Pearson è presente una leggera correlazione tra le due, seppure non paragonabile a quella presente a livello di schieramenti.
+
+```{r}
+cor.test(aSm, hsm, method="pearson")
+```
+
+Possiamo notare una certa correlazione tra il grado di authority e hub presente nei diversi schieramenti, in particolare è interessante notare la discrepanza tra liberali e conservatori in quanto il numero di archi che vanno in in nodo conservatore e quello degli archi che vanno in in nodo liberale è molto simile, così come il numero di archi intracomponente dei due schieramenti.
+
+
+
+# Limiti e Conclusioni
+Purtroppo la quantità di informazioni presenti nel dataset è abbastanza limitata e di conseguenza sono stato costretto a fare alcune assunzioni come ad esempio dato che gli archi non sono pesati ho supposto che abbiano tutti peso unitario, così facendo si perde la sfumatura dell'effettivo volume di libri acquistati.
+Un altro limite è la mancanza di una definizione temporale d'acquisto che avrebbe permesso oltre ad analizzare le vendite nel tempo anche di raffrontare quanto emerso con i sondaggi e/o risultati delle elezioni di quegli anni.
+
+Com'era facile immaginare la rete presenta molti archi intra-componente e pochi extra-componente eccezion fatta per la componete neutrale. Emerge quindi che chi compra libri di ideologie conservatrici o liberali tipicamente se acquista un altro libro esso sarà dello stesso schieramento di quello acquistato in principio. 
+Non è stato possibile individuare realmente un schieramento vincitore tra liberali e conservatori in quanto più o meno si equivalgono, nonostante in alcuni casi ci si un leggero vantaggio per i liberali, tuttavia non sufficiente per prevalere.
+
+
