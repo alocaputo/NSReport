@@ -408,7 +408,7 @@ from_c_to_n <-  edges_from_c %>%
 
 ### Liberali
 
-Il libro neutrale più acquistato da chi compra libri liberali è
+Il libro liberale più acquistato da chi compra libri neutrali è
 ```{r}
 fltn <- V(g2)$label[from_l_to_n$from[which(from_l_to_n$n==max(from_l_to_n$n))]]
 fltnv <- max(from_l_to_n$n)
@@ -420,7 +420,7 @@ pt <- paste(pt,".jpg", sep = "")
 knitr::include_graphics(pt)
 ```
 
-Mentre i libri conservatori più acquistati da chi compra libri liberali sono:
+Mentre i libri liberali più acquistati da chi compra libri conservatori sono:
 
 ```{r}
 fltc <- V(g2)$label[from_l_to_c$from[which(from_l_to_c$n==max(from_l_to_c$n))]]
@@ -437,7 +437,7 @@ In entrambi i casi il grado di raccomandazione è comunque abbastanza basso.
 
 ### Neutrali
 
-Il libro liberale più acquistato da chi compra libri neutrali è
+Il libro neutrale più acquistato da chi compra libri liberali è
 ```{r}
 fntl <- V(g2)$label[from_n_to_l$from[which(from_n_to_l$n==max(from_n_to_l$n))]]
 fntlv <- max(from_n_to_l$n)
@@ -449,7 +449,7 @@ pt <- paste(pt,".jpg", sep = "")
 knitr::include_graphics(pt)
 ```
 
-Mentre il libro conservatore più acquistato da chi compra libri liberali è:
+Mentre il libro neutrale più acquistato da chi compra libri conservatori è:
 ```{r}
 fntc <- V(g2)$label[from_n_to_c$from[which(from_n_to_c$n==max(from_n_to_c$n))]]
 fntcv <- max(from_n_to_c$n)
@@ -466,7 +466,7 @@ Per quanto riguarda i libri neurali com'era facile supporre il grado di raccoman
 
 ### Conservatori
 
-Il libro liberale più acquistato da chi compra libri conservatori è
+Il libro conservatore più acquistato da chi compra libri liberali è
 ```{r}
 fctl <- V(g2)$label[from_c_to_l$from[which(from_c_to_l$n==max(from_c_to_l$n))]]
 fctlv <- max(from_c_to_l$n)
@@ -480,7 +480,7 @@ knitr::include_graphics(pt)
 
 Interessante osservare che questo libro presenta un grado doppio rispetto alla situazione speculare, nonostante il grado medio per questi due schieramenti si del tutto simile.
 
-Mentre i libri neutrali più acquistati da chi compra libri conservatori sono:
+Mentre i libri conservaotri più acquistati da chi compra libri liberali sono:
 
 ```{r}
 fctn <- V(g2)$label[from_c_to_n$from[which(from_c_to_n$n==max(from_c_to_n$n))]]
